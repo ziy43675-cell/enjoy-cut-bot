@@ -7,6 +7,7 @@
                         date(YYYY-MM-DD), month(YYYY-MM), voided, created_at
   attendance/{uid}_{date}  user_id, name, emp_no, date, month, clock_in(HH:MM), clock_out(HH:MM)
   meta/counters         next_emp_no
+  meta/{key}            一次性標記，例如 monthly-2026-10（月報已發送）
 """
 import json
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ def _now():
 class MemoryStore:
     def __init__(self):
         self.users, self.records, self.att, self._next_no = {}, {}, {}, 1
+        self.flags = set()
 
     # 出勤
     def get_attendance(self, uid, date):
@@ -47,6 +49,16 @@ class MemoryStore:
             if (role is None or u.get("role") == role) and (status is None or u.get("status") == status):
                 out.append({"uid": uid, **u})
         return out
+
+    def claim_once(self, key):
+        """第一次呼叫回傳 True，之後都回傳 False。"""
+        if key in self.flags:
+            return False
+        self.flags.add(key)
+        return True
+
+    def has_flag(self, key):
+        return key in self.flags
 
     def next_emp_no(self):
         n = self._next_no
@@ -119,6 +131,17 @@ class FirestoreStore:
         if status:
             q = q.where(filter=self._fs.FieldFilter("status", "==", status))
         return [{"uid": d.id, **d.to_dict()} for d in q.stream()]
+
+    def claim_once(self, key):
+        from google.api_core.exceptions import AlreadyExists
+        try:
+            self.db.collection("meta").document(key).create({"at": _now()})
+            return True
+        except AlreadyExists:
+            return False
+
+    def has_flag(self, key):
+        return self.db.collection("meta").document(key).get().exists
 
     def next_emp_no(self):
         ref = self.db.collection("meta").document("counters")

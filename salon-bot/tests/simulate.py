@@ -133,4 +133,32 @@ bot.on_postback(MOM, ln.find("停用 小美"), "t"); show("停用"); assert ln.m
 bot.on_postback(AMY, "a=log", "t"); show("停用後按登記")
 bot.on_postback(AMY, "a=apply", "t"); show("停用後申請")
 bot.on_postback(MOM, "a=shop_month", "t"); print(ln.last())
+
+# 11. 查看上個月 / 每月 1 號自動月結
+bot.on_postback(MOM, "a=shop_month", "t")
+assert ln.find("◀ 看9月")
+bot.on_postback(MOM, ln.find("◀ 看9月"), "t"); show("老闆看 9 月（空的）")
+bot.on_postback(MOM, "a=shop_month&m=2099-01", "t"); assert "10月" in ln.last()   # 未來月份不接受
+
+def monthly_at(month, d, h, mi):
+    clock["v"] = datetime(2026, month, d, h, mi)
+    return bot.maybe_send_monthly_report()
+
+n0 = len(ln.pushes)
+assert monthly_at(10, 27, 12, 0) == 0            # 上線當月：上個月（9 月）沒紀錄 → 不發
+assert monthly_at(11, 1, 8, 30) == 0             # 11/1 還不到 9 點
+assert monthly_at(11, 1, 9, 5) == 1              # 9 點後發 10 月月結
+print("---- 11/1 自動推播 ----"); print(ln.pushes[-1][1][0]["text"])
+assert "10月 月結總表" in ln.pushes[-1][1][0]["text"]
+assert monthly_at(11, 1, 9, 10) == 0 and monthly_at(11, 15, 12, 0) == 0   # 同一個月只發一次
+bot2 = SalonBot(st, ln, clock=lambda: datetime(2026, 11, 1, 10, 0))       # 另一個 worker 也不會重發
+assert bot2.maybe_send_monthly_report() == 0
+assert len(ln.pushes) == n0 + 1
+
+# 11 月看本月是 0、可以回看 10 月
+bot.on_postback(MOM, "a=shop_month", "t"); show("11 月的本月總表")
+bot.on_postback(MOM, ln.find("◀ 看10月"), "t"); assert "10月 全店月結總表" in ln.last()
+bot.on_postback(MOM, "a=month&m=2026-10", "t"); show("老闆看自己 10 月")
+assert any(a["label"] == "回到本月" for a in ln.last_actions())
+
 print("\n全部測試通過 ✅")

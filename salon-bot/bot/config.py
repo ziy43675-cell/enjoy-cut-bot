@@ -29,6 +29,10 @@ BOSS_CODE = os.getenv("BOSS_CODE", "")                     # 老闆綁定密碼
 # 注意：推播會用到每月 200 則免費額度，員工多時可以關掉，老闆改用「今日總表」查看
 NOTIFY_BOSS_ON_CLOCKOUT = os.getenv("NOTIFY_BOSS_ON_CLOCKOUT", "1") == "1"
 
+# 每月 1 號自動推播上個月的月結總表給老闆（1=要、0=不要）
+MONTHLY_REPORT = os.getenv("MONTHLY_REPORT", "1") == "1"
+MONTHLY_REPORT_HOUR = int(os.getenv("MONTHLY_REPORT_HOUR", "9"))   # 1 號幾點以後發（台灣時間）
+
 # 圖文選單名稱（setup_richmenu.py 建立時用同樣的名字，程式靠名字找 id）
 MENU_GUEST = "salon-guest"
 MENU_STAFF = "salon-staff"

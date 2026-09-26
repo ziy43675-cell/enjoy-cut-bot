@@ -1,5 +1,6 @@
 """Flask 入口。部署：gunicorn app:app"""
 import logging
+import threading
 from flask import Flask, abort, request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -18,7 +19,16 @@ bot = SalonBot(make_store(), LineClient(config.LINE_CHANNEL_ACCESS_TOKEN))
 
 @app.get("/")
 def health():
+    # UptimeRobot 每 5 分鐘會打這裡，順便檢查要不要發每月 1 號的月結總表（背景執行，不拖慢回應）
+    threading.Thread(target=_monthly, daemon=True).start()
     return "salon-bot ok"
+
+
+def _monthly():
+    try:
+        bot.maybe_send_monthly_report()
+    except Exception:
+        logging.exception("月結推播失敗")
 
 
 @app.post("/callback")

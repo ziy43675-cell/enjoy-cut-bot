@@ -2,6 +2,7 @@
 
 line 物件需要提供：reply(token, msgs) / push(uid, msgs) / link_menu(uid, kind) / display_name(uid)
 """
+import re
 import secrets
 from datetime import datetime
 from urllib.parse import parse_qs
@@ -16,6 +17,21 @@ def now():
     return datetime.now(TZ)
 
 
+def month_shift(month, n):
+    """'2026-10', -1 → '2026-09'"""
+    y, m = map(int, month.split("-"))
+    m += n
+    while m < 1:
+        y, m = y - 1, m + 12
+    while m > 12:
+        y, m = y + 1, m - 12
+    return f"{y:04d}-{m:02d}"
+
+
+def month_label(month):
+    return f"{month[:4]}年{int(month[5:])}月"
+
+
 def _mins(hhmm):
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
@@ -24,6 +40,7 @@ def _mins(hhmm):
 class SalonBot:
     def __init__(self, store, line, clock=now):
         self.s, self.line, self.now = store, line, clock
+        self._sent_cache = set()     # 已確認發過的月報，省得每次都查資料庫
 
     def today(self):
         return self.now().strftime("%Y-%m-%d")
@@ -97,11 +114,14 @@ class SalonBot:
                 recs, f"📋 {u['name']} 今日紀錄 {reports.fmt_date(self.today())}"),
                 [M.pb("➕ 登記", a="log")])])
         if a == "month":
-            month = self.today()[:7]
+            month = self._pick_month(d)
             recs = self.s.records_by_user_month(uid, month)
             days = sum(1 for x in self.s.attendance_by_month(month) if x.get("user_id") == uid)
-            return self.line.reply(token, [M.text(reports.personal(
-                recs, f"📅 {u['name']} {int(month[5:])}月累計") + f"\n本月出勤 {days} 天")])
+            cur = month == self.today()[:7]
+            title = f"📅 {u['name']} {month_label(month)}{'累計（進行中）' if cur else '月結'}"
+            return self.line.reply(token, [M.text(
+                reports.personal(recs, title) + f"\n出勤 {days} 天",
+                self._month_buttons("month", month))])
         if a == "cancel":
             return self.line.reply(token, [M.text("已取消。")])
         self.line.reply(token, [M.text("看不懂這個指令，請用下方選單操作。")])
@@ -232,11 +252,31 @@ class SalonBot:
                                                     f"📊 今日總表 {reports.fmt_date(day)}",
                                                     attendance=self.s.attendance_by_date(day)))])
 
+    def _pick_month(self, d):
+        """postback 帶 m=YYYY-MM 就看那個月，否則看本月；不接受未來月份。"""
+        cur = self.today()[:7]
+        m = d.get("m", "")
+        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", m) and m <= cur:
+            return m
+        return cur
+
+    def _month_buttons(self, action, month):
+        """月報下方的快速按鈕：往前看一個月、回到本月。"""
+        cur = self.today()[:7]
+        prev = month_shift(month, -1)
+        btns = [M.pb(f"◀ 看{int(prev[5:])}月", a=action, m=prev)]
+        if month != cur:
+            btns.append(M.pb("回到本月", a=action))
+        return btns
+
     def _shop_month(self, uid, d, token):
-        month = self.today()[:7]
-        self.line.reply(token, [M.text(reports.shop(self.s.records_by_month(month),
-                                                    f"📅 {month[:4]}年{int(month[5:])}月 全店累計",
-                                                    month_attendance=self.s.attendance_by_month(month)))])
+        month = self._pick_month(d)
+        cur = month == self.today()[:7]
+        title = f"📅 {month_label(month)} 全店{'累計（進行中）' if cur else '月結總表'}"
+        self.line.reply(token, [M.text(
+            reports.shop(self.s.records_by_month(month), title,
+                         month_attendance=self.s.attendance_by_month(month)),
+            self._month_buttons("shop_month", month))])
 
     # ─────────── 打卡 ───────────
     def _clock_in(self, uid, u, token):
@@ -287,3 +327,32 @@ class SalonBot:
             note = M.text(f"🌙 {u['name']} 已下班（{a['clock_in']}–{t}）\n\n" + report)
             for b in self.s.list_users(role="boss", status="active"):
                 self.line.push(b["uid"], [note])
+
+    # ─────────── 每月 1 號自動月結 ───────────
+    def maybe_send_monthly_report(self):
+        """被健康檢查（UptimeRobot 每 5 分鐘）觸發。
+        每月 1 號 MONTHLY_REPORT_HOUR 點以後，把上個月的總表推給老闆，每個月只發一次。
+        回傳發送的老闆人數；還沒到時間或已經發過回傳 0。"""
+        if not config.MONTHLY_REPORT:
+            return 0
+        now = self.now()
+        if now.day == 1 and now.hour < config.MONTHLY_REPORT_HOUR:
+            return 0
+        prev = month_shift(now.strftime("%Y-%m"), -1)
+        key = f"monthly-{prev}"
+        if key in self._sent_cache:
+            return 0
+        if self.s.has_flag(key) or not self.s.claim_once(key):
+            self._sent_cache.add(key)
+            return 0
+        self._sent_cache.add(key)
+        recs = self.s.records_by_month(prev)
+        if not recs:            # 那個月沒有任何紀錄（例如系統還沒上線）就不發
+            return 0
+        msg = M.text(reports.shop(recs, f"🧾 {month_label(prev)} 月結總表",
+                                  month_attendance=self.s.attendance_by_month(prev)),
+                     [M.pb("看本月累計", a="shop_month")])
+        bosses = self.s.list_users(role="boss", status="active")
+        for b in bosses:
+            self.line.push(b["uid"], [msg])
+        return len(bosses)

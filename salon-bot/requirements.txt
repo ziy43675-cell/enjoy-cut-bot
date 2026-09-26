@@ -1,0 +1,5 @@
+flask>=3.0
+gunicorn>=22.0
+line-bot-sdk>=3.25,<4
+firebase-admin>=6.5
+tzdata
